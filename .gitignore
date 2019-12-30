@@ -130,4 +130,5 @@ dmypy.json
 
 data/*
 images/*
+images_old/*
 .DS_store

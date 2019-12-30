@@ -40,15 +40,6 @@ class Discriminator(nn.Module):
 
         self.label_embedding = nn.Embedding(opt.n_classes, opt.n_classes)
 
-        # Original model
-        # self.model = nn.Sequential(
-        #     nn.Linear(int(np.prod(img_shape)), 512),
-        #     nn.LeakyReLU(0.2, inplace=True),
-        #     nn.Linear(512, 256),
-        #     nn.LeakyReLU(0.2, inplace=True),
-        #     nn.Linear(256, 1),
-        # )
-
         # Copied from cgan.py
         self.model = nn.Sequential(
             nn.Linear(opt.n_classes + int(np.prod(opt.img_shape)), 512),
