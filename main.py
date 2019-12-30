@@ -4,24 +4,22 @@ import numpy as np
 import math
 import sys
 
-import torchvision.transforms as transforms
-from torchvision.utils import save_image
-
-from torch.utils.data import DataLoader
-from torchvision import datasets
-from torch.autograd import Variable
-
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.autograd as autograd
-import torch
+
+import torchvision.transforms as transforms
+from torchvision.utils import save_image
+from torch.utils.data import DataLoader
+from torchvision import datasets
 
 from models import Generator, Discriminator
 
 os.makedirs("images", exist_ok=True)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
+parser.add_argument("--n_epochs", type=int, default=150, help="number of epochs of training")
 parser.add_argument("--batch_size", type=int, default=64, help="size of the batches")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
@@ -33,6 +31,8 @@ parser.add_argument("--channels", type=int, default=1, help="number of image cha
 parser.add_argument("--n_critic", type=int, default=5, help="number of training steps for discriminator per iter")
 parser.add_argument("--clip_value", type=float, default=0.01, help="lower and upper clip value for disc. weights")
 parser.add_argument("--sample_interval", type=int, default=400, help="interval betwen image samples")
+parser.add_argument("--dataset", type=str, choices=['mnist', 'fashion'],
+                    default='mnist', help="dataset to use")
 opt = parser.parse_args()
 print(opt)
 
@@ -53,19 +53,29 @@ if cuda:
     discriminator.cuda()
 
 # Configure data loader
-os.makedirs("data/mnist", exist_ok=True)
-dataloader = torch.utils.data.DataLoader(
-    datasets.MNIST(
-        "data/mnist",
-        train=True,
-        download=True,
-        transform=transforms.Compose(
-            [transforms.Resize(opt.img_size), transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
+if opt.dataset == 'mnist':
+    os.makedirs("data/mnist", exist_ok=True)
+    dataloader = torch.utils.data.DataLoader(
+        datasets.MNIST(
+            "data/mnist", train=True, download=True,
+            transform=transforms.Compose(
+                [transforms.Resize(opt.img_size), transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
+            ),
         ),
-    ),
-    batch_size=opt.batch_size,
-    shuffle=True,
-)
+        batch_size=opt.batch_size, shuffle=True,
+    )
+else:
+    os.makedirs("data/fashion-mnist", exist_ok=True)
+    dataloader = torch.utils.data.DataLoader(
+        datasets.FashionMNIST(
+            "data/fashion-mnist", train=True, download=True,
+            transform=transforms.Compose(
+                [transforms.Resize(opt.img_size), transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
+            ),
+        ),
+        batch_size=opt.batch_size, shuffle=True,
+    )
+
 
 # Optimizers
 optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
@@ -78,24 +88,28 @@ LongTensor = torch.cuda.LongTensor if cuda else torch.LongTensor
 def sample_image(n_row, batches_done):
     """Saves a grid of generated digits ranging from 0 to n_classes"""
     # Sample noise
-    z = Variable(Tensor(np.random.normal(0, 1, (n_row ** 2, opt.latent_dim))))
+    z = Tensor(np.random.normal(0, 1, (n_row ** 2, opt.latent_dim)))
     # Get labels ranging from 0 to n_classes for n rows
     labels = np.array([num for _ in range(n_row) for num in range(n_row)])
     with torch.no_grad():
-        labels = Variable(LongTensor(labels))
+        labels = LongTensor(labels)
         gen_imgs = generator(z, labels)
     save_image(gen_imgs.data, "images/%d.png" % batches_done, nrow=n_row, normalize=True)
 
 
 def compute_gradient_penalty(D, real_samples, fake_samples, labels):
-    """Calculates the gradient penalty loss for WGAN GP"""
+    """Calculates the gradient penalty loss for WGAN GP.
+       Warning: It doesn't compute the gradient w.r.t the labels, only w.r.t
+       the interpolated real and fake samples, as in the WGAN GP paper.
+    """
     # Random weight term for interpolation between real and fake samples
     alpha = Tensor(np.random.random((real_samples.size(0), 1, 1, 1)))
     labels = LongTensor(labels)
     # Get random interpolation between real and fake samples
     interpolates = (alpha * real_samples + ((1 - alpha) * fake_samples)).requires_grad_(True)
     d_interpolates = D(interpolates, labels)
-    fake = Variable(Tensor(real_samples.shape[0], 1).fill_(1.0), requires_grad=False)
+    fake = Tensor(real_samples.shape[0], 1).fill_(1.0)
+    fake.requires_grad = False
     # Get gradient w.r.t. interpolates
     gradients = autograd.grad(
         outputs=d_interpolates,
@@ -104,8 +118,8 @@ def compute_gradient_penalty(D, real_samples, fake_samples, labels):
         create_graph=True,
         retain_graph=True,
         only_inputs=True,
-    )[0]
-    gradients = gradients.view(gradients.size(0), -1)
+    )
+    gradients = gradients[0].view(gradients[0].size(0), -1)
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
     return gradient_penalty
 
@@ -119,9 +133,9 @@ for epoch in range(opt.n_epochs):
     for i, (imgs, labels) in enumerate(dataloader):
         batch_size = imgs.shape[0]
 
-        # Configure input
-        real_imgs = Variable(imgs.type(Tensor))
-        labels = Variable(labels.type(LongTensor))
+        # Move to GPU if necessary
+        real_imgs = imgs.type(Tensor)
+        labels = labels.type(LongTensor)
 
         # ---------------------
         #  Train Discriminator
@@ -130,7 +144,7 @@ for epoch in range(opt.n_epochs):
         optimizer_D.zero_grad()
 
         # Sample noise and labels as generator input
-        z = Variable(Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim))))
+        z = Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim)))
 
         # Generate a batch of images
         fake_imgs = generator(z, labels)
